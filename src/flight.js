@@ -28,6 +28,10 @@ const RIG = {
   FreeLookReturn: 4,
 };
 
+// when shot down the camera watches the wreck fall for this long, fading out over the last second
+const WRECK_TIME = 7.0;
+const WRECK_FADE = 1.0;
+
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const F = new THREE.Vector3();
 const planeUp = new THREE.Vector3();
@@ -70,6 +74,16 @@ export class FlightController {
     this.damage = 0; // 0..100; at 100 the plane goes down
     this.hud = { speed: 0, alt: 0, throttle: 'CRUISE', warn: '' };
     this.onRespawn = () => {};
+    // shot down: the plane breaks up (explosion.js) and the camera follows the wreck
+    this.wreck = false;
+    this.wreckFade = false;
+    this.wreckFocus = new THREE.Vector3(); // set from outside: where the wreck is
+    this.wreckLook = new THREE.Vector3();
+    this.wreckCam = new THREE.Vector3();
+    this.wreckOffset = new THREE.Vector3();
+    this.wreckT = 0;
+    this.onShotDown = () => {};
+    this.wreckDone = () => false; // set from outside: true once the wreck has come down
 
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement) return;
@@ -120,6 +134,8 @@ export class FlightController {
     this.look.set(0, 0);
     this.respawnIn = 0;
     this.damage = 0;
+    this.wreck = false;
+    this.plane.setBroken(false);
   }
 
   enter() {
@@ -132,6 +148,8 @@ export class FlightController {
 
   exit() {
     this.active = false;
+    this.wreck = false;
+    this.respawnIn = 0;
     this.plane.group.visible = false;
     this.camera.up.set(0, 1, 0);
     this.camera.fov = 58;
@@ -165,6 +183,11 @@ export class FlightController {
 
     if (this.respawnIn > 0) {
       this.respawnIn -= dt;
+      if (this.wreck && !this.wreckFade && (this.respawnIn < WRECK_FADE || this.wreckDone())) {
+        this.wreckFade = true;
+        this.respawnIn = Math.min(this.respawnIn, WRECK_FADE);
+        this.onRespawn(true, 'Shot down');
+      }
       if (this.respawnIn <= 0) {
         this.spawn(Math.atan2(s.location.z, s.location.x));
         this.onRespawn(false);
@@ -180,18 +203,42 @@ export class FlightController {
         if (s.location.y < ground + MODEL.CollisionRadius) s.crashed = true;
       }
       const edge = Math.hypot(s.location.x, s.location.z) > 3950;
-      if (s.crashed || edge) {
+      if (!edge && s.crashed && this.damage >= 100) {
+        // shot down: the camera stays out here and watches it go down before the fade
+        this.wreck = true;
+        this.wreckFade = false;
+        this.respawnIn = WRECK_TIME;
+        this.wreckCam.copy(cam.position);
+        if (this.cockpit && !this.keys.KeyX) {
+          forwardOf(s.rotation, F);
+          this.wreckCam.copy(s.location).addScaledVector(F, -24).addScaledVector(WORLD_UP, 7);
+        }
+        // swing out to one side so the fall and its smoke trail are seen side-on
+        F.copy(s.velocityDir).setY(0);
+        if (F.lengthSq() < 1e-4) F.set(0, 0, -1);
+        F.normalize();
+        tmp.crossVectors(F, WORLD_UP); // right of the flight path
+        const side = tmp.dot(aim.copy(this.wreckCam).sub(s.location)) >= 0 ? 1 : -1;
+        this.wreckOffset.copy(F).multiplyScalar(-16).addScaledVector(tmp, side * 30).addScaledVector(WORLD_UP, 10);
+        this.wreckT = 0;
+        this.wreckLook.copy(s.location);
+        this.wreckFocus.copy(s.location);
+        this.onShotDown(s);
+      } else if (s.crashed || edge) {
         this.respawnIn = 0.9;
-        this.onRespawn(true, edge ? 'Leaving the gorge' : this.damage >= 100 ? 'Shot down' : 'Terrain');
+        this.onRespawn(true, edge ? 'Leaving the gorge' : 'Terrain');
       }
     }
 
     const st = this.state;
-    this.plane.group.position.copy(st.location);
-    this.plane.group.quaternion.copy(st.rotation);
-    this.plane.spin(dt, st.throttleLevel);
+    if (!this.wreck) {
+      this.plane.group.position.copy(st.location);
+      this.plane.group.quaternion.copy(st.rotation);
+      this.plane.spin(dt, st.throttleLevel);
+    }
 
-    if (this.cockpit && !this.keys.KeyX) this._cockpitCamera(dt);
+    if (this.wreck) this._wreckCamera(dt);
+    else if (this.cockpit && !this.keys.KeyX) this._cockpitCamera(dt);
     else this._chaseCamera(dt);
 
     if (dt > 0) this.vel.copy(cam.position).sub(this.prevCam).divideScalar(dt);
@@ -203,7 +250,8 @@ export class FlightController {
     h.alt = st.location.y;
     h.throttle = cmd.highG ? 'HIGH-G' : cmd.throttle > 0 ? 'BOOST' : cmd.throttle < 0 ? 'BRAKE' : 'CRUISE';
     h.warn = '';
-    if (st.stalled) h.warn = 'STALL';
+    if (this.wreck) h.warn = '';
+    else if (st.stalled) h.warn = 'STALL';
     else {
       for (let t = 0.5; t <= MODEL.GroundWarningTime; t += 0.5) {
         tmp.copy(st.location).addScaledVector(st.velocityDir, st.speed * t);
@@ -213,7 +261,23 @@ export class FlightController {
         }
       }
     }
-    this.audio?.setEngine(true, st.throttleLevel, st.speed / MODEL.MaxSpeed);
+    this.audio?.setEngine(!this.wreck, st.throttleLevel, st.speed / MODEL.MaxSpeed);
+  }
+
+  // shot down: follow the burning wreck down, pulling back and up to watch it hit
+  _wreckCamera(dt) {
+    const cam = this.camera;
+    this.wreckT += dt;
+    const pull = Math.min(1, this.wreckT / 3);
+    tmp.copy(this.wreckOffset).multiplyScalar(1 + 0.6 * pull);
+    tmp.add(this.wreckFocus);
+    this.wreckCam.lerp(tmp, 1 - Math.exp(-2.2 * dt));
+    const ground = Math.max(this.terrain.sample(this.wreckCam.x, this.wreckCam.z), 0) + 3;
+    if (this.wreckCam.y < ground) this.wreckCam.y = ground;
+    cam.position.copy(this.wreckCam);
+    this.wreckLook.lerp(this.wreckFocus, 1 - Math.exp(-5 * dt));
+    cam.up.lerp(WORLD_UP, 1 - Math.exp(-1.5 * dt)).normalize();
+    cam.lookAt(this.wreckLook);
   }
 
   _lookOffset(dt) {

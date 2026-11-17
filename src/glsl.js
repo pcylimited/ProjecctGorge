@@ -33,6 +33,17 @@ vec3 lampLight(vec3 p, vec3 N) {
 uniform vec3 uBeamPos[16];
 uniform vec3 uBeamDir[16];
 uniform int uBeamCount;
+uniform vec3 uBlastPos;
+uniform vec3 uBlastColor;
+
+// orange light from an explosion or a burning wreck
+vec3 blastLight(vec3 p, vec3 N) {
+  if (uBlastColor.r <= 0.0) return vec3(0.0);
+  vec3 d = uBlastPos - p;
+  float d2 = dot(d, d) + 1.0;
+  float ndl = max(dot(N, d * inversesqrt(d2)), 0.0) * 0.85 + 0.15;
+  return uBlastColor * ndl * 400.0 / (d2 + 400.0);
+}
 
 // light from every searchlight whose beam covers this point
 vec3 beamLight(vec3 p, vec3 N) {
@@ -48,7 +59,7 @@ vec3 beamLight(vec3 p, vec3 N) {
       sum += k * (max(dot(N, -uBeamDir[i]), 0.0) * 0.8 + 0.2);
     }
   }
-  return vec3(0.8, 0.9, 1.0) * sum * 1.7;
+  return vec3(0.8, 0.9, 1.0) * sum * 1.7 + blastLight(p, N);
 }
 
 vec2 worldUV(vec2 xz) {

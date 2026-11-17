@@ -64,7 +64,8 @@ function buildAirframe() {
   const parts = [];
   // kind: 0 = painted airframe (camouflage and markings come from the shader),
   //       1 = flat colour, 2 = glowing lamp
-  const add = (geo, kind, color = [0, 0, 0]) => {
+  // part: 0 fuselage, 1 left wing, 2 right wing, 3 tail (pieces that separate when it is shot down)
+  const add = (geo, kind, color = [0, 0, 0], part = 0) => {
     const g = geo.index ? geo.toNonIndexed() : geo;
     if (g.attributes.uv) g.deleteAttribute('uv');
     const n = g.attributes.position.count;
@@ -72,6 +73,7 @@ function buildAirframe() {
     for (let i = 0; i < n; i++) col.set(color, i * 3);
     g.setAttribute('aKind', new THREE.BufferAttribute(k, 1));
     g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('aPart', new THREE.BufferAttribute(new Float32Array(n).fill(part), 1));
     parts.push(g);
   };
 
@@ -95,33 +97,33 @@ function buildAirframe() {
   // canopy
   add(body([[-1.35, 0.05, 0.04, 0.58], [-0.95, 0.27, 0.3, 0.62], [-0.2, 0.31, 0.38, 0.66], [0.5, 0.27, 0.3, 0.64], [1.15, 0.08, 0.06, 0.6]], 10), 1, [0.015, 0.02, 0.028]);
 
-  // wings: low-set, tapered, slight dihedral, rounded tips
+  // wings: low-set, tapered, slight dihedral, rounded tips; each half is its own piece
   const wingY = (x) => -0.38 + Math.abs(x) * 0.1;
-  add(
+  const wing = (xs) =>
     surface(
-      [-5.75, -5.55, -0.5, 0.5, 5.55, 5.75].map((x) => {
+      xs.map((x) => {
         const k = Math.min(1, Math.abs(x) / 5.55);
         const tip = Math.abs(x) > 5.6 ? 0.55 : 1;
         const chord = (2.45 - 1.25 * k) * tip;
         return [x, -2.15 + 0.45 * k + (1 - tip) * 0.5, chord, wingY(x)];
       }),
       0.15
-    ),
-    0
-  );
+    );
+  add(wing([-5.75, -5.55, -0.5, 0]), 0, undefined, 1);
+  add(wing([0, 0.5, 5.55, 5.75]), 0, undefined, 2);
   // tailplane and fin
-  add(surface([[-1.95, 4.05, 0.6, 0.26], [-0.1, 3.55, 1.25, 0.26], [0.1, 3.55, 1.25, 0.26], [1.95, 4.05, 0.6, 0.26]], 0.1), 0);
-  add(surface([[0.15, 3.45, 1.55, 0], [1.2, 3.95, 1.05, 0], [1.8, 4.35, 0.6, 0]], 0.09, true), 0);
+  add(surface([[-1.95, 4.05, 0.6, 0.26], [-0.1, 3.55, 1.25, 0.26], [0.1, 3.55, 1.25, 0.26], [1.95, 4.05, 0.6, 0.26]], 0.1), 0, undefined, 3);
+  add(surface([[0.15, 3.45, 1.55, 0], [1.2, 3.95, 1.05, 0], [1.8, 4.35, 0.6, 0]], 0.09, true), 0, undefined, 3);
 
   // navigation lamps: red to port (left), green to starboard, white on the tail
-  const lamp = (x, y, z, color) => {
+  const lamp = (x, y, z, color, part) => {
     const g = new THREE.BoxGeometry(0.12, 0.08, 0.16);
     g.translate(x, y, z);
-    add(g, 2, color);
+    add(g, 2, color, part);
   };
-  lamp(-5.72, wingY(5.72) + 0.02, -1.25, [3.0, 0.25, 0.2]);
-  lamp(5.72, wingY(5.72) + 0.02, -1.25, [0.2, 2.6, 0.5]);
-  lamp(0, 0.25, 4.95, [1.6, 1.6, 1.5]);
+  lamp(-5.72, wingY(5.72) + 0.02, -1.25, [3.0, 0.25, 0.2], 1);
+  lamp(5.72, wingY(5.72) + 0.02, -1.25, [0.2, 2.6, 0.5], 2);
+  lamp(0, 0.25, 4.95, [1.6, 1.6, 1.5], 0);
 
   return mergeGeometries(parts);
 }
@@ -129,6 +131,10 @@ function buildAirframe() {
 const planeVert = /* glsl */ `
 attribute float aKind;
 attribute vec3 aColor;
+attribute float aPart;
+// once the plane breaks up, each piece is placed in the world by its own matrix
+uniform mat4 uPartM[4];
+uniform float uBroken;
 varying vec3 vLocal;
 varying vec3 vLocalN;
 varying vec3 vWorldPos;
@@ -138,9 +144,10 @@ varying vec3 vColor;
 void main() {
   vLocal = position;
   vLocalN = normal;
-  vec4 wp = modelMatrix * vec4(position, 1.0);
+  mat4 M = uBroken > 0.5 ? uPartM[int(aPart + 0.5)] : modelMatrix;
+  vec4 wp = M * vec4(position, 1.0);
   vWorldPos = wp.xyz;
-  vNormal = mat3(modelMatrix) * normal;
+  vNormal = mat3(M) * normal;
   vKind = aKind;
   vColor = aColor;
   gl_Position = projectionMatrix * viewMatrix * wp;
@@ -154,6 +161,7 @@ varying vec3 vWorldPos;
 varying vec3 vNormal;
 varying float vKind;
 varying vec3 vColor;
+uniform float uBurn;
 ${COMMON}
 
 const vec3 BLUE = vec3(0.02, 0.06, 0.26);
@@ -211,6 +219,10 @@ void main() {
     }
   }
 
+  // scorched black where it is burning
+  float burnN = texture(uNoiseTex, p.xz * 0.21 + p.y * 0.13 + 0.5).r;
+  if (uBurn > 0.0) albedo = mix(albedo, vec3(0.012, 0.011, 0.01), uBurn * smoothstep(0.25, 0.75, burnN + uBurn * 0.55 - 0.3));
+
   float hs = terrainHS(wp.xz).g;
   float sh = smoothstep(-9.0, -1.0, wp.y - hs);
   vec3 moonFlat = normalize(vec3(uMoonDir.x, 0.0, uMoonDir.z));
@@ -236,7 +248,12 @@ void main() {
   float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
   col += uFogAmbient * rim * 0.35 * gloss;
 
-  if (vKind > 1.5) col = vColor * (0.75 + 0.25 * sin(uTime * 9.0));
+  if (vKind > 1.5) col = vColor * (0.75 + 0.25 * sin(uTime * 9.0)) * (1.0 - uBurn);
+  // glowing patches in the burning metal
+  if (uBurn > 0.0) {
+    float e = texture(uNoiseTex, p.xz * 0.5 + p.y * 0.4 + uTime * 0.02).g;
+    col += vec3(3.2, 0.9, 0.18) * uBurn * smoothstep(0.66, 0.78, e) * (0.6 + 0.4 * sin(uTime * 11.0 + e * 40.0));
+  }
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -261,10 +278,12 @@ void main() {
 
 export function createPlane() {
   const group = new THREE.Group();
+  const partM = Array.from({ length: 4 }, () => new THREE.Matrix4());
+  const pieces = { uPartM: { value: partM }, uBroken: { value: 0 }, uBurn: { value: 0 } };
   const body = new THREE.Mesh(
     buildAirframe(),
     new THREE.ShaderMaterial({
-      uniforms: { ...shared },
+      uniforms: { ...shared, ...pieces },
       vertexShader: planeVert,
       fragmentShader: planeFrag,
       side: THREE.DoubleSide,
@@ -289,6 +308,16 @@ export function createPlane() {
   group.visible = false;
   return {
     group,
+    partM, // world matrix of each piece while broken
+    // broken: the pieces are placed by partM (in world space) and the propeller disc is gone
+    setBroken(on) {
+      pieces.uBroken.value = on ? 1 : 0;
+      prop.visible = !on;
+      if (!on) pieces.uBurn.value = 0;
+    },
+    setBurn(k) {
+      pieces.uBurn.value = k;
+    },
     spin(dt, rpmFactor) {
       propMat.uniforms.uSpin.value = (propMat.uniforms.uSpin.value + dt * (25 + 30 * rpmFactor)) % (Math.PI * 2);
     },

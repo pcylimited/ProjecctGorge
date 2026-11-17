@@ -35,4 +35,7 @@ export const shared = {
   uBeamPos: { value: Array.from({ length: MAX_BEAMS }, () => new THREE.Vector3(0, -9999, 0)) },
   uBeamDir: { value: Array.from({ length: MAX_BEAMS }, () => new THREE.Vector3(0, -1, 0)) },
   uBeamCount: { value: 0 },
+  // light from an explosion or a burning wreck, written by explosion.js (colour 0 = none)
+  uBlastPos: { value: new THREE.Vector3(0, -9999, 0) },
+  uBlastColor: { value: new THREE.Vector3(0, 0, 0) },
 };

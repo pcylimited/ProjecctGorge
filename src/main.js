@@ -14,6 +14,7 @@ import { CameraRig } from './camera.js';
 import { createTemple } from './temple.js';
 import { createForest } from './vegetation.js';
 import { createOutposts } from './outposts.js';
+import { createExplosions } from './explosion.js';
 import { FlightController } from './flight.js';
 import { createTouchControls } from './touch.js';
 
@@ -73,6 +74,7 @@ async function boot() {
   progress(0.988, 'Manning the searchlights');
   await tick();
   const outposts = createOutposts(terrain, scene, overlay, weather.depthU, audio);
+  const fx = createExplosions(terrain, overlay, weather.depthU, audio, camera);
 
   progress(0.992, 'Planting the forest');
   await tick();
@@ -84,6 +86,14 @@ async function boot() {
   flight.onRespawn = (down, why) => {
     fadeEl.classList.toggle('on', down);
     if (down) fadeEl.textContent = why === 'Terrain' ? '' : why;
+    else fx.endWreck();
+  };
+  flight.wreckFocus = fx.focus;
+  flight.wreckDone = () => fx.downFor > 1.2;
+  flight.onShotDown = (s) => {
+    fx.shootDown(flight.plane, s);
+    hitFlash = 1;
+    shake = 1.4;
   };
 
   const params = {
@@ -163,6 +173,7 @@ async function boot() {
     if (fly && !flight.active) flight.enter();
     if (!fly && flight.active) {
       flight.exit();
+      fx.endWreck();
       rig.mode = 'free'; // so the cinematic path is re-entered from where the plane was
     }
     rig.enabled = !fly;
@@ -234,6 +245,7 @@ async function boot() {
     const alive = flight.active && flight.respawnIn <= 0;
     if (alive) planeVel.copy(flight.state.velocityDir).multiplyScalar(flight.state.speed);
     const watch = outposts.update(dt, time, alive ? flight.state.location : null, planeVel);
+    fx.update(dt, camera.position);
     if (alive && watch.hits) {
       flight.damage = Math.min(100, flight.damage + watch.hits * DAMAGE_PER_HIT);
       if (flight.damage >= 100) flight.state.crashed = true;
@@ -270,7 +282,7 @@ async function boot() {
 
   // handle for poking at the scene from the browser console
   window.__gorge = {
-    renderer, camera, rig, weather, shared, params, composer, gorge, grade, mistAt, terrain, forest, flight, outposts, setView,
+    renderer, camera, rig, weather, shared, params, composer, gorge, grade, mistAt, terrain, forest, flight, outposts, fx, setView,
     // place the free camera over the river at ring angle `th`
     at(th, y = 60, side = 0, yawOff = 0, pitch = -0.05) {
       const p = rig._point(th, new THREE.Vector3());

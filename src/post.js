@@ -107,6 +107,8 @@ void main() {
     Li += uMoonColor * lit * phM;
     vec3 tf = uFlashPos - p;
     Li += uFlashColor * uFlash * (0.02 + 0.5 / (1.0 + dot(tf, tf) / (280.0 * 280.0)));
+    vec3 tb = uBlastPos - p;
+    Li += uBlastColor * (0.15 * 900.0 / (dot(tb, tb) + 900.0));
 
     scat += trans * a * Li;
     trans *= 1.0 - a;
@@ -163,6 +165,17 @@ void main() {
     float vis = smoothstep(-70.0, -10.0, sceneD - tL);
     float halo = pow(900.0 / (b2 + 900.0), 1.5);
     col += uLampColor * halo * vis * (0.06 + 0.1 * min(uMist, 1.5)) * exp(-tL * 0.0005);
+  }
+
+  // fire glowing through the mist around an explosion or a burning wreck
+  if (uBlastColor.r > 0.0) {
+    vec3 toB = uBlastPos - uCamPos;
+    float tB = max(dot(toB, rd), 0.0);
+    float bb = dot(toB, toB) - tB * tB;
+    float sceneB = isSky ? 1e9 : viewZ(d) / max(-vd.z, 1e-4);
+    float visB = smoothstep(-60.0, -5.0, sceneB - tB);
+    float haloB = pow(900.0 / (bb + 900.0), 1.5);
+    col += uBlastColor * haloB * visB * (0.01 + 0.02 * min(uMist, 1.5)) * exp(-tB * 0.0005);
   }
   gl_FragColor = vec4(col, 1.0);
 }
