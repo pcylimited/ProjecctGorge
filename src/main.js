@@ -15,6 +15,7 @@ import { createTemple } from './temple.js';
 import { createForest } from './vegetation.js';
 import { createOutposts } from './outposts.js';
 import { createExplosions } from './explosion.js';
+import { createAirfield } from './airfield.js';
 import { FlightController } from './flight.js';
 import { createTouchControls } from './touch.js';
 
@@ -69,30 +70,38 @@ async function boot() {
   progress(0.985, 'Raising the temple');
   await tick();
   if (terrain.site) scene.add(createTemple(terrain.site));
+  progress(0.986, 'Laying the runway at Baidicheng');
+  await tick();
+  const airfield = createAirfield(terrain, scene);
   const audio = new StormAudio();
   const weather = new Weather(terrain, overlay, audio);
   progress(0.988, 'Manning the searchlights');
   await tick();
-  const outposts = createOutposts(terrain, scene, overlay, weather.depthU, audio);
+  const outposts = createOutposts(terrain, scene, overlay, weather.depthU, audio, airfield);
   const fx = createExplosions(terrain, overlay, weather.depthU, audio, camera);
 
   progress(0.992, 'Planting the forest');
   await tick();
-  const forest = createForest(terrain, { clearings: outposts.clearings });
+  const forest = createForest(terrain, {
+    clearings: outposts.clearings,
+    keepClear: airfield ? (x, z) => airfield.keepClear(x, z) : null,
+  });
   scene.add(forest.group);
 
   const rig = new CameraRig(camera, terrain, canvas);
   const flight = new FlightController(camera, terrain, scene, canvas, audio);
+  flight.airfield = airfield;
   flight.onRespawn = (down, why) => {
     fadeEl.classList.toggle('on', down);
     if (down) fadeEl.textContent = why === 'Terrain' ? '' : why;
     else fx.endWreck();
   };
   flight.wreckFocus = fx.focus;
-  flight.wreckDone = () => fx.downFor > 1.2;
-  flight.onShotDown = (s) => {
-    fx.shootDown(flight.plane, s);
-    hitFlash = 1;
+  flight.wreckDone = () => fx.downFor > fx.watchFor;
+  flight.onWreck = (s, shotDown) => {
+    if (shotDown) fx.shootDown(flight.plane, s);
+    else fx.crash(flight.plane, s);
+    hitFlash = shotDown ? 1 : 0.7;
     shake = 1.4;
   };
 
@@ -221,6 +230,7 @@ async function boot() {
   let wet = 0; // how much water is on the lens, 0..1
   let hitFlash = 0, shake = 0;
   const planeVel = new THREE.Vector3();
+  const bufSize = new THREE.Vector2();
   let last = performance.now();
   let time = 0;
   let frameCount = 0;
@@ -241,11 +251,12 @@ async function boot() {
     }
     camera.updateMatrixWorld();
     weather.update(dt, camera, flight.active ? flight.vel : rig.vel);
-    // the enemy only sees a plane that is flying (not one waiting to respawn)
-    const alive = flight.active && flight.respawnIn <= 0;
+    // the enemy only sees a plane that is flying (not one on the runway or waiting to respawn)
+    const alive = flight.active && flight.respawnIn <= 0 && !flight.ground;
     if (alive) planeVel.copy(flight.state.velocityDir).multiplyScalar(flight.state.speed);
     const watch = outposts.update(dt, time, alive ? flight.state.location : null, planeVel);
     fx.update(dt, camera.position);
+    if (airfield) airfield.update(dt, camera, renderer.getDrawingBufferSize(bufSize).y);
     if (alive && watch.hits) {
       flight.damage = Math.min(100, flight.damage + watch.hits * DAMAGE_PER_HIT);
       if (flight.damage >= 100) flight.state.crashed = true;
@@ -258,7 +269,8 @@ async function boot() {
       const h = flight.hud;
       hudEl.innerHTML =
         `<span>SPD <b>${Math.round(h.speed)}</b> km/h</span><span>ALT <b>${Math.round(h.alt)}</b> m</span>` +
-        `<span>${h.throttle}</span>${h.warn ? `<span class="warn">${h.warn}</span>` : ''}` +
+        `<span>${h.throttle}</span>${h.gear ? `<span>${h.gear}</span>` : ''}` +
+        `${h.prompt ? `<span class="flag">${h.prompt}</span>` : ''}${h.warn ? `<span class="warn">${h.warn}</span>` : ''}` +
         `${watch.plane ? `<span class="spot">${watch.plane}</span>` : ''}` +
         `${watch.firing ? '<span class="spot">UNDER FIRE</span>' : ''}` +
         `${flight.damage > 0 ? `<span${flight.damage > 60 ? ' class="warn"' : ''}>DMG <b>${Math.round(flight.damage)}</b>%</span>` : ''}` +
@@ -282,7 +294,7 @@ async function boot() {
 
   // handle for poking at the scene from the browser console
   window.__gorge = {
-    renderer, camera, rig, weather, shared, params, composer, gorge, grade, mistAt, terrain, forest, flight, outposts, fx, setView,
+    renderer, camera, rig, weather, shared, params, composer, gorge, grade, mistAt, terrain, forest, flight, outposts, fx, airfield, setView,
     // place the free camera over the river at ring angle `th`
     at(th, y = 60, side = 0, yawOff = 0, pitch = -0.05) {
       const p = rig._point(th, new THREE.Vector3());

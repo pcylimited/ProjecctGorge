@@ -281,7 +281,7 @@ function flagship(pb) {
   return pb.mesh();
 }
 
-export function createOutposts(terrain, scene, overlay, depthU, audio) {
+export function createOutposts(terrain, scene, overlay, depthU, audio, airfield = null) {
   const pb = new PartBuilder();
   const group = new THREE.Group();
   const lights = [];
@@ -290,7 +290,8 @@ export function createOutposts(terrain, scene, overlay, depthU, audio) {
   const radars = [];
   const clearings = []; // ground the forest must leave bare
   const site = terrain.site;
-  const clearOfTemple = (p) => !site || Math.hypot(p.x - site.x, p.z - site.z) > 260;
+  // no posts at the temple, and none within reach of the airfield
+  const clearOfTemple = (p) => (!site || Math.hypot(p.x - site.x, p.z - site.z) > 260) && (!airfield || airfield.distTo(p.x, p.z) > 800);
   const gunfire = createGunfire(terrain, overlay, depthU, audio);
 
   const beamGeo = new THREE.CylinderGeometry(0.8 + BEAM_LEN * 0.022, 0.8, BEAM_LEN, 20, 6, true);
@@ -411,10 +412,17 @@ export function createOutposts(terrain, scene, overlay, depthU, audio) {
     mesh.rotation.order = 'YXZ';
     group.add(mesh);
     const guard = i >= 10;
+    let c = guard ? FINALE_TH - 0.045 : FINALE_TH + 0.35 + (i * span) / 10;
+    if (airfield && !guard) {
+      // keep the patrols off the airfield's reach of river, so a plane can climb out unmolested
+      const fth = Math.atan2(airfield.field.z, airfield.field.x);
+      const d = Math.atan2(Math.sin(c - fth), Math.cos(c - fth));
+      if (Math.abs(d) < 0.75) c = fth + (d < 0 ? -0.75 : 0.75) + d * 0.1;
+    }
     const b = {
       mesh, pos: mesh.position, phase: i * 2.7, sgn: -1, yaw: undefined,
       // reach centre and half-length (radians round the ring) and how fast it goes back and forth
-      c: guard ? FINALE_TH - 0.045 : FINALE_TH + 0.35 + (i * span) / 10,
+      c,
       A: guard ? 0 : 0.18,
       w: 0.017 + 0.004 * (i % 3),
       off: guard ? (i === 10 ? -45 : 45) : i % 2 ? 26 : -26,

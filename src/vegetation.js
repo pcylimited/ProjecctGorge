@@ -172,7 +172,7 @@ const KINDS = [
 ];
 
 // Scatter trees over level ground near the gorge: ledges, ridge tops, ravine floors.
-export function createForest(terrain, { spacing = 10, reach = 1250, drawDistance = 2700, clearings = [] } = {}) {
+export function createForest(terrain, { spacing = 10, reach = 1250, drawDistance = 2700, clearings = [], keepClear = null } = {}) {
   const rng = mulberry32(4242);
   const noise = new Perlin(77);
   const half = WORLD / 2;
@@ -213,6 +213,7 @@ export function createForest(terrain, { spacing = 10, reach = 1250, drawDistance
         nearTemple = ds < 130;
       }
       if (clearings.some((c) => Math.hypot(x - c.x, z - c.z) < c.r)) continue;
+      if (keepClear && keepClear(x, z)) continue;
       const piney = noise.noise2(x * 0.0035 + 50, z * 0.0035 - 20) + (nearTemple ? 0.5 : 0) + (y > 320 ? 0.25 : 0);
       const kind = piney + (r2 - 0.5) * 0.5 > 0.12 ? 0 : 1;
       const big = 0.75 + 0.5 * r3 + 0.15 * grove;

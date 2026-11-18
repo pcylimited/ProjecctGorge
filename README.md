@@ -64,8 +64,11 @@ cinematic and free, and the bolt strikes lightning. Drag anywhere else to look a
 
 The plane has no weapons; the enemy does. A searchlight beam that finds you brings every machine
 gun in range down on you, and the guns keep firing for a moment after you slip out of the light.
-Each hit adds 2% damage; at 100% you are shot down. Hitting the ground or leaving the gorge also
-puts you back over the river. The river runs anticlockwise from the start; near the end, before it
+Each hit adds 2% damage. At 100% the plane blows up: a wing tears off, and the burning fuselage
+goes down trailing smoke while flaming debris arcs away. The camera pulls out to watch it hit the
+river or the hillside, then you start again over the river. Flying into the rock or the river
+blows the plane up where it hits: the fuselage burns there (or sinks), and the wings and tail are
+thrown on ahead. Leaving the gorge puts you straight back over the river. The river runs anticlockwise from the start; near the end, before it
 comes back round, it opens into an anchorage where the flagship lies, and the HUD shows the distance
 to it once you are within 3 km.
 
@@ -91,6 +94,7 @@ Everything is generated in the browser at load time. There are no image, model o
 | `src/flight.js` | Key input, fixed 60 Hz stepping, terrain check, and the chase camera ported from `AFlightCameraManager`. |
 | `src/plane.js` | The aircraft model and its markings. |
 | `src/gunfire.js` | Machine-gun tracers: rounds that fly and drop, hit the plane, spark on rock, splash in the river, with muzzle flashes and a synthesised rattle. |
+| `src/explosion.js` | Explosions: fireball, smoke, embers, flaming debris and river spray drawn as soft puffs over the mist; the glow that lights the rock, water and trees; the plane breaking into pieces that tumble down and burn; and a synthesised boom. |
 | `src/outposts.js` | Japanese Army positions: about 50 searchlight posts on the heights, each with a sandbagged machine gun; radar stations; 12 gunboats with a searchlight and two guns; sampans drifting on the river; and the flagship anchored where the river ends. Lights sweep the water and lock on to whatever they touch. Once a beam has the plane, every gun in range with a clear line fires. All beams are drawn; the 16 nearest the viewer also light the ground. |
 | `src/structures.js` | Shared builder and material for the temple, radars and searchlights. |
 

@@ -128,6 +128,43 @@ function buildAirframe() {
   return mergeGeometries(parts);
 }
 
+// Landing gear, in the plane's own frame (nose towards -Z): where each main leg is hinged, how
+// long it is, and the wheels. With the gear down the plane sits on its main wheels and tail wheel,
+// nose up at the three-point angle; flight.js uses these numbers to put it on the ground.
+const MAIN_HINGE = [1.85, -0.3, -1.55];
+const MAIN_LEG = 1.2;
+const MAIN_R = 0.36;
+const TAIL_HINGE = [0, -0.02, 4.0];
+const TAIL_LEG = 0.38;
+const TAIL_R = 0.15;
+export const GEAR = {
+  mainY: MAIN_HINGE[1] - MAIN_LEG - MAIN_R, // lowest point of the main wheels
+  mainZ: MAIN_HINGE[2],
+  tailY: TAIL_HINGE[1] - TAIL_LEG - TAIL_R,
+  tailZ: TAIL_HINGE[2] + 0.08,
+  wheelR: MAIN_R,
+};
+// nose-up angle (radians) sitting on all three wheels
+GEAR.threePoint = Math.atan2(GEAR.tailY - GEAR.mainY, GEAR.tailZ - GEAR.mainZ);
+// height of the plane's origin above the ground, resting on its main wheels at nose-up angle a
+GEAR.heightAt = (a) => -(GEAR.mainY * Math.cos(a)) + GEAR.mainZ * Math.sin(a);
+
+// one colour, for the gear and the stopped propeller (same attributes as the airframe)
+function paint(geo, color) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  if (g.attributes.uv) g.deleteAttribute('uv');
+  const n = g.attributes.position.count;
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) col.set(color, i * 3);
+  g.setAttribute('aKind', new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
+  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aPart', new THREE.BufferAttribute(new Float32Array(n), 1));
+  return g;
+}
+const STEEL = [0.05, 0.052, 0.055];
+const TYRE = [0.012, 0.012, 0.012];
+const HUB = [0.16, 0.16, 0.15];
+
 const planeVert = /* glsl */ `
 attribute float aKind;
 attribute vec3 aColor;
@@ -236,8 +273,9 @@ void main() {
   float att = 1.0 / (1.0 + (df * df) / (1500.0 * 1500.0));
   light += uFlashColor * uFlash * (max(dot(N, Lf), 0.0) * 0.85 + 0.15) * att;
 
-  // caught in a searchlight
+  // caught in a searchlight, or under the airfield floodlight
   light += beamLight(wp, N) * 1.3;
+  light += lampLight(wp, N) * 1.3;
 
   vec3 col = albedo * light;
 
@@ -305,15 +343,99 @@ export function createPlane() {
   prop.frustumCulled = false;
   group.add(prop);
 
+  // a still propeller, for a plane parked with its engine off
+  const bladeGeo = [];
+  for (let k = 0; k < 3; k++) {
+    const b = new THREE.BoxGeometry(0.05, 1.55, 0.2);
+    b.translate(0, 0.85, 0);
+    b.rotateZ((k * Math.PI * 2) / 3 + 0.4);
+    bladeGeo.push(paint(b, [0.02, 0.02, 0.02]));
+  }
+  const blades = new THREE.Mesh(mergeGeometries(bladeGeo), body.material);
+  blades.position.copy(prop.position);
+  blades.visible = false;
+  group.add(blades);
+
+  // landing gear: the main legs fold inwards into the wings, the tail wheel folds up into the tail
+  const gear = new THREE.Group();
+  group.add(gear);
+  const wheels = [];
+  const legs = [];
+  for (const side of [-1, 1]) {
+    const leg = new THREE.Group();
+    leg.position.set(side * MAIN_HINGE[0], MAIN_HINGE[1], MAIN_HINGE[2]);
+    const strut = new THREE.CylinderGeometry(0.075, 0.06, MAIN_LEG, 7);
+    strut.translate(0, -MAIN_LEG / 2, 0);
+    const door = new THREE.BoxGeometry(0.03, MAIN_LEG * 0.8, 0.52);
+    door.translate(side * 0.11, -MAIN_LEG * 0.45, 0);
+    leg.add(new THREE.Mesh(mergeGeometries([paint(strut, STEEL), paint(door, [0.085, 0.1, 0.05])]), body.material));
+    const wheel = new THREE.Group();
+    wheel.position.set(0, -MAIN_LEG, 0);
+    const tyre = new THREE.CylinderGeometry(MAIN_R, MAIN_R, 0.19, 16);
+    tyre.rotateZ(Math.PI / 2);
+    const hub = new THREE.CylinderGeometry(0.15, 0.15, 0.21, 10);
+    hub.rotateZ(Math.PI / 2);
+    wheel.add(new THREE.Mesh(mergeGeometries([paint(tyre, TYRE), paint(hub, HUB)]), body.material));
+    leg.add(wheel);
+    gear.add(leg);
+    legs.push({ leg, side, axis: 'z' });
+    wheels.push({ wheel, r: MAIN_R });
+  }
+  {
+    const leg = new THREE.Group();
+    leg.position.set(...TAIL_HINGE);
+    const strut = new THREE.CylinderGeometry(0.05, 0.04, TAIL_LEG, 6);
+    strut.translate(0, -TAIL_LEG / 2, 0.04);
+    leg.add(new THREE.Mesh(paint(strut, STEEL), body.material));
+    const wheel = new THREE.Group();
+    wheel.position.set(0, -TAIL_LEG, 0.08);
+    const tyre = new THREE.CylinderGeometry(TAIL_R, TAIL_R, 0.1, 12);
+    tyre.rotateZ(Math.PI / 2);
+    wheel.add(new THREE.Mesh(paint(tyre, TYRE), body.material));
+    leg.add(wheel);
+    gear.add(leg);
+    legs.push({ leg, side: 0, axis: 'x' });
+    wheels.push({ wheel, r: TAIL_R });
+  }
+  for (const m of gear.children) m.traverse((o) => (o.frustumCulled = false));
+  let gearDown = 1;
+  const setGear = (k) => {
+    gearDown = k;
+    const up = 1 - k;
+    for (const { leg, side, axis } of legs) {
+      if (axis === 'z') leg.rotation.z = -side * up * (Math.PI / 2);
+      else leg.rotation.x = -up * (Math.PI / 2) * 1.05;
+    }
+    gear.visible = !broken && k > 0.001;
+  };
+  let broken = false;
+
   group.visible = false;
   return {
     group,
     partM, // world matrix of each piece while broken
     // broken: the pieces are placed by partM (in world space) and the propeller disc is gone
     setBroken(on) {
+      broken = on;
       pieces.uBroken.value = on ? 1 : 0;
-      prop.visible = !on;
+      prop.visible = !on && !blades.visible;
+      if (on) blades.visible = false;
       if (!on) pieces.uBurn.value = 0;
+      setGear(gearDown);
+    },
+    // 1 = gear down, 0 = folded away
+    setGear,
+    get gear() {
+      return gearDown;
+    },
+    // turn the wheels for `dist` metres rolled
+    roll(dist) {
+      for (const w of wheels) w.wheel.rotation.x -= dist / w.r;
+    },
+    // engine off: the propeller stands still
+    stopProp(on) {
+      blades.visible = on;
+      prop.visible = !on && !broken;
     },
     setBurn(k) {
       pieces.uBurn.value = k;

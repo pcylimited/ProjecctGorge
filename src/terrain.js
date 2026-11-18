@@ -48,7 +48,7 @@ const smooth = (a, b, x) => {
   return t * t * (3 - 2 * t);
 };
 
-function heightFn(n, x0, z0) {
+function heightFn(n, x0, z0, field = null) {
   const r = Math.hypot(x0, z0);
   const th = Math.atan2(z0, x0);
   const rc = riverR(th);
@@ -143,7 +143,126 @@ function heightFn(n, x0, z0) {
   h += 0.7 * (n.noise2(x0 * 0.05, z0 * 0.05) + 0.6) * smooth(0, 8, e0);
   h += 3 * rockN * (1 - smooth(0, 20, e0));
   if (h > 540) h = 540 + (h - 540) * 0.5; // keep the summits under the flight ceiling
+
+  if (field) h = shapeAirfield(h, x0, z0, e0, field);
   return Math.max(h, 0.15 + 0.02 * e0);
+}
+
+// how far (u, v) lies outside the rectangle [u0, u1] x [v0, v1]
+const rectOut = (u, v, [u0, u1, v0, v1]) => Math.hypot(Math.max(u0 - u, u - u1, 0), Math.max(v0 - v, v - v1, 0));
+
+// The airbase cut into the bank: a dead-level terrace for the runway, apron and shelter bays,
+// the hillside cut back behind it; on the river side the ground drops (inside the footprint of
+// the river wall that airfield.js builds) to a strip of foreshore. Behind the apron, a second
+// terrace higher up carries the temple, its front wall rising straight from a paved forecourt.
+function shapeAirfield(h, x0, z0, e0, field) {
+  const R = RUNWAY;
+  const ox = x0 - field.x, oz = z0 - field.z;
+  const u = ox * field.dx + oz * field.dz, v = ox * field.rx + oz * field.rz;
+  const d1 = Math.min(rectOut(u, v, [-R.U, R.U, R.V0, R.V1]), rectOut(u, v, R.FORE), rectOut(u, v, R.BAYS));
+  const dC = rectOut(u, v, R.UPPER);
+  if (d1 >= R.FALL && dC >= 40) return h;
+  const T1 = lerp(field.y, R.SHORE, smooth(R.V1 - R.WALL, R.V1, v));
+  const T2 = lerp(R.Y2, field.y, smooth(R.UPPER[3] - R.WALL, R.UPPER[3], v));
+  const shoreK = smooth(0, 14, e0);
+  if (d1 === 0) return lerp(h, T1, shoreK);
+  if (dC === 0) return T2;
+  const m2 = 1 - smooth(0, 40, dC);
+  const riverSide = 1 - smooth(R.V1 + 15, R.V1 + 60, v);
+  const m1 = (1 - smooth(0, R.FALL, d1)) * riverSide * (1 - m2);
+  return lerp(lerp(h, T2, m2), T1, m1 * shoreK);
+}
+
+// The airfield, in its own frame: u runs down the runway in the take-off direction, v to the right.
+// The runway is L long and W wide. The level ground runs U each way along it and from V0 to V1
+// across it (the river is on the right, the apron and buildings on the left), then rises back
+// into the hillside over FALL. It sits Y above the water.
+// Rectangles are [u0, u1, v0, v1].
+export const RUNWAY = {
+  L: 1000, W: 40, U: 560, V0: -170, V1: 36, FALL: 240, Y: 18,
+  WALL: 10, // thickness of the river wall (and the temple terrace wall)
+  SHORE: 2, // height of the foreshore at the foot of the river wall
+  FORE: [-400, -270, -215, -170], // paved forecourt below the temple wall
+  BAYS: [-150, 50, -185, -170], // level ground run back into the hill for the aircraft shelters
+  UPPER: [-400, -270, -295, -215], // the temple terrace
+  Y2: 63, // its height above the river
+  TEMPLE: [-335, -262], // where the temple stands on it
+};
+
+// Where the airfield goes: a straight reach of bank between the temple and the flagship, running
+// along the river with the water on its right. The line of the runway must run on over the water
+// (or low ground) for a good way, so a plane can climb out down the gorge; of the places that
+// allow that, the one that cuts least into the hillside wins.
+function planAirfield(n) {
+  const { L, U, V0, V1, Y } = RUNWAY;
+  const hwAt = (x, z) => 82 + 30 * n.noise2(x * 0.0011 + 31.7, z * 0.0011 - 12.3) + 100 * finaleK(Math.atan2(z, x));
+  const river = (th) => {
+    const r = riverR(th);
+    return [Math.cos(th) * r, Math.sin(th) * r];
+  };
+  const half = (U + 60) / R0;
+  const try1 = (th, dir, tilt) => {
+    // the chord of this reach, in the direction of take-off, turned by `tilt`
+    const [ax, az] = river(th - dir * half), [bx, bz] = river(th + dir * half);
+    const cl = Math.hypot(bx - ax, bz - az);
+    const ux = (bx - ax) / cl, uz = (bz - az) / cl;
+    const c = Math.cos(tilt), sn = Math.sin(tilt);
+    const dx = ux * c - uz * sn, dz = ux * sn + uz * c;
+    const rx = -dz, rz = dx;
+    // slide the strip away from the water (to its left) until its near edge is well up the bank
+    const clearAt = (x, z) => {
+      for (let u = -U; u <= U; u += 40) {
+        for (const v of [V1, V0]) {
+          const px = x + dx * u + rx * v, pz = z + dz * u + rz * v;
+          if (distToRiver(px, pz) - hwAt(px, pz) < 16) return false;
+        }
+      }
+      return true;
+    };
+    const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+    let off = 40;
+    while (off <= 440 && !clearAt(mx - rx * off, mz - rz * off)) off += 10;
+    if (off > 440) return null;
+    const x = mx - rx * off, z = mz - rz * off;
+    if (Math.hypot(x, z) > 3500) return null;
+    // how far it can climb out at 10% along the runway line before the ground rises above it
+    const plan = { x, z, y: Y, dx, dz, rx, rz };
+    let run = 0;
+    for (let t = 0; t <= 2000; t += 50) {
+      const line = Y + 30 + 0.1 * t, u = L / 2 + t;
+      if (heightFn(n, x + dx * u, z + dz * u, plan) > line) break;
+      if (heightFn(n, x + dx * u - rx * 0.06 * t, z + dz * u - rz * 0.06 * t, plan) > line) break;
+      if (heightFn(n, x + dx * u + rx * 0.06 * t, z + dz * u + rz * 0.06 * t, plan) > line) break;
+      run = t + 50;
+    }
+    return { x, z, dx, dz, rx, rz, run, th, dir, tilt };
+  };
+  // how much hillside has to be cut away for the strip
+  const cut = (f) => {
+    let s = 0;
+    for (let u = -U; u <= U; u += 80) for (const v of [V0, (V0 + V1) / 2, V1]) s += heightFn(n, f.x + f.dx * u + f.rx * v, f.z + f.dz * u + f.rz * v);
+    return s / 45;
+  };
+  const score = (f) => (f.run >= 1800 ? 1e4 - cut(f) : f.run);
+  let best = null, bestS = -1;
+  const consider = (f) => {
+    if (!f) return;
+    const sc = score(f);
+    if (sc > bestS) {
+      best = f;
+      bestS = sc;
+    }
+  };
+  for (let th = -Math.PI / 2 + 1.35; th < -Math.PI / 2 + 4.8; th += 0.03) {
+    for (const dir of [1, -1]) for (let tilt = -0.4; tilt <= 0.401; tilt += 0.08) consider(try1(th, dir, tilt));
+  }
+  if (!best) return null;
+  // and a closer look around the best of those
+  const b0 = best;
+  for (let th = b0.th - 0.03; th <= b0.th + 0.03; th += 0.01) {
+    for (let tilt = b0.tilt - 0.08; tilt <= b0.tilt + 0.08; tilt += 0.02) consider(try1(th, b0.dir, tilt));
+  }
+  return { x: best.x, z: best.z, y: Y, dx: best.dx, dz: best.dz, rx: best.rx, rz: best.rz, run: best.run, th: best.th };
 }
 
 // Yield to the browser so the loading bar can repaint. A message channel is used
@@ -168,11 +287,58 @@ void main() {
 }
 `;
 
-const terrainFrag = /* glsl */ `
+const terrainFrag = () => /* glsl */ `
 varying vec3 vWorldPos;
 varying vec3 vNormal;
 varying float vAO;
 ${COMMON}
+uniform vec3 uFieldC;
+uniform vec2 uFieldD;
+
+// The airfield frame: x down the runway in the take-off direction, y across it to the right.
+vec2 fieldUV(vec3 p) {
+  vec2 o = p.xz - uFieldC.xz;
+  return vec2(dot(o, uFieldD), dot(o, vec2(-uFieldD.y, uFieldD.x)));
+}
+vec3 fieldPoint(float u, float v, float h) {
+  return vec3(uFieldC.x + uFieldD.x * u - uFieldD.y * v, uFieldC.y + h, uFieldC.z + uFieldD.y * u + uFieldD.x * v);
+}
+const float HALF_L = ${(RUNWAY.L / 2).toFixed(1)};
+const float HALF_W = ${(RUNWAY.W / 2).toFixed(1)};
+const vec3 POT = vec3(1.0, 0.78, 0.5);
+
+// A taxiway joining the runway edge (v = -HALF_W) to an apron edge (v = top) at u = c, 22 m wide
+// with its corners rounded off.
+bool inTaxi(float u, float v, float c, float top) {
+  if (v > -HALF_W || v < top) return false;
+  float du = abs(u - c);
+  if (du < 11.0) return true;
+  if (du > 26.0) return false;
+  float e = min(-HALF_W - v, v - top);
+  if (e > 15.0) return false;
+  return length(vec2(du - 26.0, e - 15.0)) > 15.0;
+}
+
+// The flare pots every 50 m down both edges: a pool of light round each one, and on wet ground
+// their reflections. Only the three nearest along the runway on each side are counted.
+vec3 fieldLamps(vec3 wp, vec3 N, vec3 V, float wet, vec2 fl, out vec3 spec) {
+  vec3 c = vec3(0.0);
+  spec = vec3(0.0);
+  float k0 = floor((fl.x + HALF_L) / 50.0 + 0.5);
+  for (int i = -1; i <= 1; i++) {
+    float k = k0 + float(i);
+    if (k < 0.0 || k > HALF_L / 25.0) continue;
+    float lu = k * 50.0 - HALF_L;
+    for (int s = -1; s <= 1; s += 2) {
+      vec3 d = fieldPoint(lu, float(s) * (HALF_W + 2.0), 0.5) - wp;
+      float d2 = dot(d, d);
+      vec3 Lp = d * inversesqrt(d2);
+      c += POT * (max(dot(N, Lp), 0.0) * 0.8 + 0.2) * 2.2 / (1.0 + d2 / 3.5);
+      spec += POT * pow(max(dot(N, normalize(Lp + V)), 0.0), 140.0) * wet * 5.0 / (1.0 + d2 / 40000.0);
+    }
+  }
+  return c;
+}
 
 vec3 bump(vec3 N, vec3 g, float k) {
   return normalize(N - (g - dot(g, N) * N) * k);
@@ -272,6 +438,74 @@ void main() {
   float wetLine = 1.0 - smoothstep(0.1, 1.8, wp.y);
   albedo *= mix(1.0, 0.5, wetLine);
 
+  // the airbase: asphalt runway with white markings, concrete apron, taxiways and shelter bays
+  // with yellow lines, a paved forecourt under the temple wall, grass verges; puddles in the rain
+  vec2 fl = fieldUV(wp);
+  float onField = 0.0, fieldWet = 0.0;
+  if (abs(wp.y - uFieldC.y) < 0.6 && abs(fl.x) < ${(RUNWAY.U + 1).toFixed(1)} && fl.y > ${(RUNWAY.FORE[2] - 1).toFixed(1)} && fl.y < ${RUNWAY.V1.toFixed(1)}) {
+    vec4 s1 = texture(uNoiseTex, wp.xz * 0.31 + 0.13);
+    vec4 s2 = texture(uNoiseTex, wp.xz * 1.7 + 0.61);
+    vec4 s3 = texture(uNoiseTex, wp.xz * 0.045 + 0.37);
+    float puddle = smoothstep(0.6, 0.7, s3.r * 0.7 + s1.g * 0.3) * (0.3 + 0.7 * uRain);
+    float u = fl.x, v = fl.y, av = abs(v);
+    float wear = smoothstep(0.12, 0.4, s1.b);
+    vec3 white = vec3(0.52, 0.52, 0.5) * (0.6 + 0.4 * wear);
+    vec3 yellow = vec3(0.5, 0.36, 0.06) * (0.6 + 0.4 * wear);
+    if (abs(u) < HALF_L && av < HALF_W) {
+      // asphalt, darker where the tyres touch down
+      vec3 tar = vec3(0.05, 0.051, 0.054) * (0.8 + 0.4 * s2.r) * (0.9 + 0.2 * s3.g);
+      float endD = HALF_L - abs(u);
+      float rubber = smoothstep(80.0, 160.0, endD) * smoothstep(560.0, 380.0, endD) * smoothstep(12.0, 4.0, av);
+      tar *= 1.0 - 0.35 * rubber * texture(uNoiseTex, vec2(u * 0.004, v * 0.4)).g;
+      float paint = 0.0;
+      if (av > HALF_W - 1.6 && av < HALF_W - 0.7) paint = 1.0; // edge lines
+      if (av < 0.45 && endD > 60.0 && mod(u + HALF_L, 50.0) < 30.0) paint = 1.0; // centre line
+      if (endD > 6.0 && endD < 36.0 && av > 3.0 && av < 17.4 && fract((av - 3.0) / 3.6) < 0.5) paint = 1.0; // threshold bars
+      if (endD > 150.0 && endD < 195.0 && av > 6.0 && av < 15.0) paint = 1.0; // aiming point
+      for (int k = 0; k < 2; k++) {
+        float d0 = k == 0 ? 300.0 : 450.0;
+        if (endD > d0 && endD < d0 + 22.5 && av > 6.0 && av < 13.5 && fract((av - 6.0) / 2.5) < 0.6) paint = 1.0; // touchdown zone
+      }
+      albedo = mix(tar, white, paint);
+      onField = 1.0;
+    } else {
+      bool apron = (u > -480.0 && u < -150.0 && v > -165.0 && v < -65.0)
+        || (u > -150.0 && u < 50.0 && v > -185.0 && v < -120.0);
+      bool taxi = inTaxi(u, v, -440.0, -65.0) || inTaxi(u, v, -180.0, -65.0) || inTaxi(u, v, 20.0, -120.0);
+      if (apron || taxi) {
+        // concrete slabs with dark joints
+        vec2 pj = abs(fract(fl / 7.5) - 0.5);
+        float joint = smoothstep(0.47, 0.5, max(pj.x, pj.y));
+        albedo = vec3(0.13, 0.13, 0.125) * (0.85 + 0.3 * s2.r) * (0.9 + 0.2 * s3.b) * (1.0 - 0.45 * joint);
+        float line = 0.0;
+        for (int k = 0; k < 3; k++) {
+          float c = k == 0 ? -440.0 : (k == 1 ? -180.0 : 20.0);
+          if (abs(u - c) < 0.3 && v < -HALF_W && v > (k == 2 ? -135.0 : -88.0)) line = 1.0;
+        }
+        if (abs(v + 88.0) < 0.3 && u > -440.0 && u < -150.0) line = 1.0;
+        if (abs(v + 135.0) < 0.3 && u > -150.0 && u < 20.0) line = 1.0;
+        albedo = mix(albedo, yellow, line);
+        onField = 1.0;
+      } else if (u > ${RUNWAY.FORE[0].toFixed(1)} && u < ${RUNWAY.FORE[1].toFixed(1)} && v < ${RUNWAY.V0.toFixed(1)} + 4.0) {
+        // stone paving in the forecourt
+        vec2 pj = abs(fract(fl / vec2(1.6, 0.8) + vec2(0.0, floor(fl.x / 1.6) * 0.5)) - 0.5);
+        albedo = vec3(0.12, 0.115, 0.1) * (0.8 + 0.4 * s2.g) * (1.0 - 0.4 * smoothstep(0.44, 0.5, max(pj.x, pj.y)));
+        onField = 1.0;
+      } else {
+        // mown grass on the verges
+        albedo = mix(vec3(0.018, 0.03, 0.012), vec3(0.04, 0.058, 0.022), s2.g) * (0.75 + 0.5 * s1.r);
+        rock = 0.0;
+        Nd = normalize(mix(N, Nd, 0.4));
+      }
+    }
+    if (onField > 0.0) {
+      albedo *= mix(1.0, 0.55, puddle);
+      fieldWet = mix(0.15, 1.0, puddle) * (0.3 + 0.7 * uRain);
+      Nd = N;
+      rock = 0.0;
+    }
+  }
+
   // moonlight with baked terrain shadow
   float hs = terrainHS(wp.xz).g;
   float sh = smoothstep(-9.0, -1.0, wp.y - hs);
@@ -290,12 +524,14 @@ void main() {
   light += uFlashColor * uFlash * (max(dot(Nd, Lf), 0.0) * 0.85 + 0.15 * ao) * att;
   light += lampLight(wp, Nd);
   light += beamLight(wp, Nd);
+  vec3 V = normalize(uCamPos - wp);
+  vec3 lampSpec = vec3(0.0);
+  if (abs(wp.y - uFieldC.y) < 0.6 && abs(fl.x) < HALF_L + 30.0 && abs(fl.y) < HALF_W + 30.0) light += fieldLamps(wp, Nd, V, fieldWet, fl, lampSpec);
 
-  vec3 col = albedo * light;
+  vec3 col = albedo * light + lampSpec;
 
   // rain-wet sheen
-  vec3 V = normalize(uCamPos - wp);
-  float gloss = mix(0.12, 0.55, rock) * (0.3 + 0.7 * uRain) + wetLine * 0.4;
+  float gloss = mix(0.12, 0.55, rock) * (0.3 + 0.7 * uRain) + wetLine * 0.4 + fieldWet * 0.8;
   col += uMoonColor * pow(max(dot(Nd, normalize(uMoonDir + V)), 0.0), 48.0) * gloss * sh * 0.5;
   col += uFlashColor * uFlash * att * pow(max(dot(Nd, normalize(Lf + V)), 0.0), 48.0) * gloss * 0.5;
 
@@ -303,14 +539,15 @@ void main() {
 }
 `;
 
-export async function buildTerrain(onProgress = () => {}) {
+export async function buildTerrain(onProgress = () => {}, opts = {}) {
   const n = new Perlin(7);
   const H = new Float32Array(G1 * G1);
   const half = WORLD / 2;
+  const field = opts.field === false ? null : planAirfield(n);
 
   for (let j = 0; j < G1; j++) {
     const z = -half + j * CELL;
-    for (let i = 0; i < G1; i++) H[j * G1 + i] = heightFn(n, -half + i * CELL, z);
+    for (let i = 0; i < G1; i++) H[j * G1 + i] = heightFn(n, -half + i * CELL, z, field);
     if (j % 24 === 0) {
       onProgress((j / G1) * 0.75);
       await tick();
@@ -334,10 +571,15 @@ export async function buildTerrain(onProgress = () => {}) {
     return 10 / Math.sqrt(dx * dx + dz * dz + 100);
   }
 
-  // Temple site: a ledge a little way downstream of the start that is fairly level
-  // and drops away steeply towards the river. The ground there is then levelled.
+  // Temple site: with an airbase, on the terrace above its apron, facing the river.
+  // Otherwise a ledge a little way downstream of the start that is fairly level and drops
+  // away steeply towards the river; the ground there is then levelled.
   let site = null;
-  for (let th = -Math.PI / 2 + 0.28; th < -Math.PI / 2 + 1.0; th += 0.008) {
+  if (field) {
+    const [tu, tv] = RUNWAY.TEMPLE;
+    site = { x: field.x + field.dx * tu + field.rx * tv, z: field.z + field.dz * tu + field.rz * tv, y: RUNWAY.Y2, dirX: field.rx, dirZ: field.rz };
+  }
+  for (let th = -Math.PI / 2 + 0.28; th < -Math.PI / 2 + 1.0 && !field; th += 0.008) {
     const rc = riverR(th), cx = Math.cos(th), sz = Math.sin(th);
     for (const side of [-1, 1]) {
       for (let off = 150; off <= 400; off += 12) {
@@ -357,7 +599,7 @@ export async function buildTerrain(onProgress = () => {}) {
       }
     }
   }
-  if (site) {
+  if (site && !field) {
     const R1 = 48, R2 = 92;
     const i0 = Math.max(0, Math.floor((site.x - R2 + half) / CELL)), i1 = Math.min(GRID, Math.ceil((site.x + R2 + half) / CELL));
     const j0 = Math.max(0, Math.floor((site.z - R2 + half) / CELL)), j1 = Math.min(GRID, Math.ceil((site.z + R2 + half) / CELL));
@@ -425,7 +667,7 @@ export async function buildTerrain(onProgress = () => {}) {
   const material = new THREE.ShaderMaterial({
     uniforms: { ...shared },
     vertexShader: terrainVert,
-    fragmentShader: terrainFrag,
+    fragmentShader: terrainFrag(),
   });
 
   // Mesh, split into chunks so off-screen parts are culled.
@@ -486,5 +728,5 @@ export async function buildTerrain(onProgress = () => {}) {
     await tick();
   }
 
-  return { group, heightTex, sample, flatness, site, material };
+  return { group, heightTex, sample, flatness, site, field, material };
 }

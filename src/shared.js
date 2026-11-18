@@ -38,4 +38,10 @@ export const shared = {
   // light from an explosion or a burning wreck, written by explosion.js (colour 0 = none)
   uBlastPos: { value: new THREE.Vector3(0, -9999, 0) },
   uBlastColor: { value: new THREE.Vector3(0, 0, 0) },
+  // the airfield: runway centre and take-off direction (terrain.js paints the runway there),
+  // and the floodlight over its apron, written by airfield.js
+  uFieldC: { value: new THREE.Vector3(0, -9999, 0) },
+  uFieldD: { value: new THREE.Vector2(1, 0) },
+  uFieldLampPos: { value: new THREE.Vector3(0, -9999, 0) },
+  uFieldLampColor: { value: new THREE.Vector3(0, 0, 0) },
 };

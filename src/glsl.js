@@ -20,14 +20,19 @@ uniform float uRain;
 uniform float uMist;
 uniform vec3 uTemplePos;
 uniform vec3 uLampColor;
+uniform vec3 uFieldLampPos;
+uniform vec3 uFieldLampColor;
 
-// warm lantern light spilling from the temple courtyard
+// warm lantern light spilling from the temple courtyard, and the floodlight over the airfield apron
 vec3 lampLight(vec3 p, vec3 N) {
+  vec3 c = vec3(0.0);
   vec3 d = uTemplePos - p;
   float d2 = dot(d, d);
-  if (d2 > 160000.0) return vec3(0.0);
-  float ndl = max(dot(N, d * inversesqrt(d2)), 0.0) * 0.8 + 0.2;
-  return uLampColor * ndl / (1.0 + d2 / 200.0);
+  if (d2 < 160000.0) c += uLampColor * (max(dot(N, d * inversesqrt(d2)), 0.0) * 0.8 + 0.2) / (1.0 + d2 / 200.0);
+  d = uFieldLampPos - p;
+  d2 = dot(d, d) + 1.0;
+  if (d2 < 90000.0) c += uFieldLampColor * (max(dot(N, d * inversesqrt(d2)), 0.0) * 0.85 + 0.15) / (1.0 + d2 / 900.0);
+  return c;
 }
 
 uniform vec3 uBeamPos[16];

@@ -387,6 +387,7 @@ export function createExplosions(terrain, overlay, depthU, audio, camera) {
   const bodies = []; // rigid pieces: { ids, pivot, p, q, v, w, cd, r, main, state, burn, t, acc, accS, emit }
   const focus = new THREE.Vector3();
   let wreckT = 0;
+  let watchFor = 1.2; // seconds to watch the wreck after it comes down, before the fade
   const M = new THREE.Matrix4();
   const Mp = new THREE.Matrix4();
   const ONE = new THREE.Vector3(1, 1, 1);
@@ -412,6 +413,7 @@ export function createExplosions(terrain, overlay, depthU, audio, camera) {
     plane = planeModel;
     plane.setBroken(true);
     wreckT = 0;
+    watchFor = 1.2;
     const loc = s.location, rot = s.rotation;
     const vel = s.velocityDir.clone().multiplyScalar(s.speed);
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(rot);
@@ -454,6 +456,45 @@ export function createExplosions(terrain, overlay, depthU, audio, camera) {
     }
     focus.copy(loc);
     blast(loc, vel, 1, 10);
+  }
+
+  // flew into the rock or the river: it blows up where it hit and the pieces are flung on
+  function crash(planeModel, s) {
+    endWreck();
+    plane = planeModel;
+    plane.setBroken(true);
+    wreckT = 0;
+    watchFor = 2.2;
+    const loc = s.location, rot = s.rotation;
+    const vel = s.velocityDir.clone().multiplyScalar(s.speed);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(rot);
+    const h = terrain.sample(loc.x, loc.z);
+    const water = h < 0.3;
+    const at = loc.clone();
+    at.y = Math.max(at.y, Math.max(h, 0) + 0.6);
+
+    // the fuselage stays where it hit: burning on the rock, or sinking in the river
+    addBody([0], 0, at, rot, new THREE.Vector3(), new THREE.Vector3(), 0.005, 1.2, true, [new THREE.Vector3(0, 0.1, -3.4)], 99);
+    const main = bodies[bodies.length - 1];
+    main.state = water ? 'sink' : 'ground';
+    main.tDown = 0;
+    if (water) main.p.y = 0;
+    // the wings and tail are thrown on ahead and up, tumbling
+    for (const [id, side] of [[1, -1], [2, 1], [3, 0]]) {
+      addBody(
+        [id], id, at, rot,
+        vel.clone().multiplyScalar(rnd(0.2, 0.4)).addScaledVector(right, side * rnd(4, 9)).add(tmp.set(0, rnd(8, 16), 0)).addScaledVector(randDir(tmp2), 4),
+        randDir(tmp2).multiplyScalar(rnd(5, 10)),
+        0.03, 0.5, false,
+        [new THREE.Vector3(side * 0.3, -0.3, id === 3 ? 3.6 : -1.0)],
+        1.4
+      );
+      const b = bodies[bodies.length - 1];
+      b.p.y = Math.max(b.p.y, Math.max(terrain.sample(b.p.x, b.p.z), 0) + 1.5);
+    }
+    focus.copy(at);
+    blast(at, vel.multiplyScalar(0.2), water ? 0.8 : 1, water ? 5 : 10);
+    if (water) splash(at, 1.4);
   }
 
   function endWreck() {
@@ -605,7 +646,11 @@ export function createExplosions(terrain, overlay, depthU, audio, camera) {
     blast,
     splash,
     shootDown,
+    crash,
     endWreck,
+    get watchFor() {
+      return watchFor;
+    },
     get wrecked() {
       return plane !== null;
     },
